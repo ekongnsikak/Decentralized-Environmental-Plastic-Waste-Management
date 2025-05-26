@@ -1,127 +1,97 @@
-;; Processing Verification Contract
-;; Validates recycling operations
+;; Waste Source Verification Contract
+;; Validates and registers plastic waste generators
 
 (define-constant contract-owner tx-sender)
-(define-constant err-owner-only (err u300))
-(define-constant err-not-found (err u301))
-(define-constant err-invalid-processor (err u302))
-(define-constant err-unauthorized (err u303))
-
-;; Processing status constants
-(define-constant status-received u1)
-(define-constant status-processing u2)
-(define-constant status-completed u3)
-(define-constant status-failed u4)
+(define-constant err-owner-only (err u100))
+(define-constant err-already-verified (err u101))
+(define-constant err-not-found (err u102))
+(define-constant err-unauthorized (err u103))
 
 ;; Data structures
-(define-map certified-processors
-  { processor: principal }
+(define-map verified-sources
+  { source-id: uint }
   {
+    owner: principal,
     name: (string-ascii 100),
     location: (string-ascii 200),
-    certification-date: uint,
+    waste-type: (string-ascii 50),
+    verified-at: uint,
     is-active: bool
   }
 )
 
-(define-map processing-records
-  { processing-id: uint }
-  {
-    collection-id: uint,
-    processor: principal,
-    input-amount: uint, ;; in kg
-    processing-method: (string-ascii 100),
-    start-date: uint,
-    end-date: (optional uint),
-    status: uint,
-    efficiency-rate: (optional uint), ;; percentage
-    created-at: uint
-  }
-)
-
-(define-map processing-counter { id: uint } { count: uint })
+(define-map source-counter { id: uint } { count: uint })
 
 ;; Initialize counter
-(map-set processing-counter { id: u0 } { count: u0 })
+(map-set source-counter { id: u0 } { count: u0 })
 
-;; Get next processing ID
-(define-private (get-next-processing-id)
-  (let ((current-count (default-to u0 (get count (map-get? processing-counter { id: u0 })))))
+;; Get next source ID
+(define-private (get-next-source-id)
+  (let ((current-count (default-to u0 (get count (map-get? source-counter { id: u0 })))))
     (let ((next-id (+ current-count u1)))
-      (map-set processing-counter { id: u0 } { count: next-id })
+      (map-set source-counter { id: u0 } { count: next-id })
       next-id
     )
   )
 )
 
-;; Register a processor (admin only)
-(define-public (register-processor
-  (processor principal)
-  (name (string-ascii 100))
-  (location (string-ascii 200))
+;; Register a new waste source
+(define-public (register-source (name (string-ascii 100)) (location (string-ascii 200)) (waste-type (string-ascii 50)))
+  (let ((source-id (get-next-source-id)))
+    (map-set verified-sources
+      { source-id: source-id }
+      {
+        owner: tx-sender,
+        name: name,
+        location: location,
+        waste-type: waste-type,
+        verified-at: block-height,
+        is-active: true
+      }
+    )
+    (ok source-id)
+  )
 )
+
+;; Verify a source (admin only)
+(define-public (verify-source (source-id uint))
   (if (is-eq tx-sender contract-owner)
-    (begin
-      (map-set certified-processors
-        { processor: processor }
-        {
-          name: name,
-          location: location,
-          certification-date: block-height,
-          is-active: true
-        }
+    (match (map-get? verified-sources { source-id: source-id })
+      source-data (begin
+        (map-set verified-sources
+          { source-id: source-id }
+          (merge source-data { verified-at: block-height })
+        )
+        (ok true)
       )
-      (ok true)
+      err-not-found
     )
     err-owner-only
   )
 )
 
-;; Start processing
-(define-public (start-processing
-  (collection-id uint)
-  (input-amount uint)
-  (processing-method (string-ascii 100))
+;; Get source information
+(define-read-only (get-source (source-id uint))
+  (map-get? verified-sources { source-id: source-id })
 )
-  (if (is-some (map-get? certified-processors { processor: tx-sender }))
-    (let ((processing-id (get-next-processing-id)))
-      (map-set processing-records
-        { processing-id: processing-id }
-        {
-          collection-id: collection-id,
-          processor: tx-sender,
-          input-amount: input-amount,
-          processing-method: processing-method,
-          start-date: block-height,
-          end-date: none,
-          status: status-received,
-          efficiency-rate: none,
-          created-at: block-height
-        }
-      )
-      (ok processing-id)
-    )
-    err-invalid-processor
+
+;; Check if source is verified and active
+(define-read-only (is-source-active (source-id uint))
+  (match (map-get? verified-sources { source-id: source-id })
+    source-data (get is-active source-data)
+    false
   )
 )
 
-;; Update processing status
-(define-public (update-processing-status
-  (processing-id uint)
-  (new-status uint)
-  (efficiency-rate (optional uint))
-)
-  (match (map-get? processing-records { processing-id: processing-id })
-    processing-data
-    (if (is-eq tx-sender (get processor processing-data))
+;; Deactivate source
+(define-public (deactivate-source (source-id uint))
+  (match (map-get? verified-sources { source-id: source-id })
+    source-data
+    (if (or (is-eq tx-sender (get owner source-data)) (is-eq tx-sender contract-owner))
       (begin
-        (map-set processing-records
-          { processing-id: processing-id }
-          (merge processing-data {
-            status: new-status,
-            efficiency-rate: efficiency-rate,
-            end-date: (if (is-eq new-status status-completed) (some block-height) (get end-date processing-data))
-          })
+        (map-set verified-sources
+          { source-id: source-id }
+          (merge source-data { is-active: false })
         )
         (ok true)
       )
@@ -129,22 +99,4 @@
     )
     err-not-found
   )
-)
-
-;; Get processing record
-(define-read-only (get-processing-record (processing-id uint))
-  (map-get? processing-records { processing-id: processing-id })
-)
-
-;; Check if processor is certified
-(define-read-only (is-processor-certified (processor principal))
-  (match (map-get? certified-processors { processor: processor })
-    processor-data (get is-active processor-data)
-    false
-  )
-)
-
-;; Get processor info
-(define-read-only (get-processor-info (processor principal))
-  (map-get? certified-processors { processor: processor })
 )
