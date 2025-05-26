@@ -5,6 +5,11 @@ authors = []
 telemetry = true
 cache_dir = './.cache'
 requirements = []
+[contracts.processing-verification]
+path = 'contracts/processing-verification.clar'
+clarity_version = 2
+epoch = 2.5
+
 [contracts.waste-source-verification]
 path = 'contracts/waste-source-verification.clar'
 clarity_version = 2
